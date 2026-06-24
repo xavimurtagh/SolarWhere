@@ -13,6 +13,7 @@ import BatteryAdvisor from '../src/features/battery/BatteryAdvisor'
 import Optimizer from '../src/features/optimizer/Optimizer'
 import EnterprisePlanner from '../src/features/enterprise/EnterprisePlanner'
 import Guide from '../src/features/guide/Guide'
+import Calculator from '../src/features/calculator/Calculator'
 import { ResultsDashboard } from '../src/features/calculator/ResultsDashboard'
 import { runAssessment } from '../src/lib/assess'
 import { findRegion } from '../src/lib/data/regions'
@@ -56,6 +57,7 @@ const sampleResult = runAssessment({
   batteryKWh: 10,
 })
 tryRender('ResultsDashboard', <ResultsDashboard result={sampleResult} />)
+tryRender('Calculator', <Calculator />)
 
 console.log(`\n=== ${failures === 0 ? 'ALL RENDERED' : failures + ' FAILED'} ===\n`)
 process.exit(failures === 0 ? 0 : 1)

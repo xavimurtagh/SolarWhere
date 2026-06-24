@@ -26,6 +26,16 @@ SolarWhere is six tools sharing one calculation engine:
 | 📘 **Guide** | A thorough, written guide: how PV works, suitability, sizing, costs, financing & incentives, batteries, maximising output, the install process, maintenance, lifespan & recycling, common mistakes, FAQ and a glossary. |
 | 🏠 **Home** | Overview and on-ramp to the tools. |
 
+**Across the whole app:**
+
+- 💷 **Input by bill _or_ kWh** — don't know your usage? Enter your average monthly bill and SolarWhere infers it from your tariff.
+- 🏦 **Cash vs. loan financing** — see the up-front-vs-monthly trade-off, total interest, and whether solar is cashflow-positive from day one.
+- 🧾 **Before/after bill** — your monthly electricity bill, before and after going solar.
+- 💾 **Save, 🔗 share & ⚖️ compare** — autosaves locally, encodes the whole scenario into a shareable URL, and compares saved scenarios (5 kW vs 8 kW, battery vs not…) side by side.
+- ⬇️ **Export** — download a CSV (summary + 25-year cashflow) or 🖨️ print a clean report for your installer.
+- ♿ **Accessible & responsive** — keyboard focus styles, ARIA labels, reduced-motion support, a mobile sticky summary, and graceful empty/edge states.
+- 📊 **Enterprise extras** — sortable cost-efficiency table ($/kWh, $/tonne CO₂, payback), CSV import/export of sites, portfolio-level ROI, and a carbon-target inverse planner.
+
 ---
 
 ## 🔬 The model (how the numbers are produced)
@@ -55,6 +65,8 @@ black-box fudge factors:
   (economies of scale), scaled by region; inverter replacement.
 - **Finance** (`finance.ts`) — full cashflow with price escalation, simple
   payback, **NPV**, **IRR** (bisection) and **LCOE**.
+- **Financing** (`financing.ts`) — cash-vs-loan amortization, total interest,
+  monthly net cashflow and loan breakeven.
 - **Environment** (`environment.ts`) — CO₂ avoided, relatable equivalents
   (trees, cars, flights) and energy payback time.
 - **Optimization** (`optimize.ts`) — greedy budget allocation across sites and
@@ -95,11 +107,23 @@ npm run preview    # preview the production build
 ### Tests
 
 ```bash
-npm run test          # engine sanity + component render smoke tests
+npm run test          # unit suite + engine sanity + render smoke (86+ tests)
+npm run test:unit     # per-module unit tests (edge cases & invariants)
 npm run test:engine   # physical-plausibility checks against benchmarks
 npm run test:render   # server-render every screen to catch runtime errors
 npm run typecheck     # tsc -b --noEmit
+npm run build && npm run e2e   # real-browser E2E (Playwright): console-error
+                               # checks + screenshots of every screen
 ```
+
+The unit suite covers every engine module with edge cases (zero area, polar
+latitudes, never-pays-back, divide-by-zero guards) and **invariants** — energy
+conservation, bounded self-sufficiency, monotonic battery behaviour, and a
+full-pipeline property test across all regions × surfaces × battery options.
+The E2E test drives a real browser to confirm charts and the Leaflet map render
+without console errors; it **skips gracefully** if no Chromium binary is
+available (e.g. restricted CI), so run `npx playwright install chromium` to
+enable it.
 
 ---
 
@@ -116,15 +140,20 @@ src/
       battery.ts      #   self-consumption + storage model
       costs.ts        #   cost curves
       finance.ts      #   payback, NPV, IRR, LCOE
+      financing.ts    #   cash vs loan amortization
       environment.ts  #   CO₂ + equivalents
       optimize.ts     #   portfolio + grid-scale helpers
       types.ts        #   shared domain types
     data/             # regions + panel datasets
     assess.ts         # builds inputs from regional defaults and runs the engine
+    scenario.ts       # calculator state: persistence, share URLs, comparison
     format.ts, geo.ts, nav.ts
   components/         # Layout, UI primitives, charts, map picker
   features/           # home, calculator, battery, optimizer, enterprise, guide
-test/                 # engine + render smoke tests
+test/
+  unit/               # per-module unit tests (node:test)
+  e2e/                # Playwright browser test + screenshots
+  *.smoke.ts(x)       # engine sanity + server-render smoke tests
 ```
 
 ## ➕ Extending

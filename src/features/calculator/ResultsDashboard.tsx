@@ -1,4 +1,5 @@
 import type { AssessmentResult } from '../../lib/solar/types'
+import type { FinancingResult } from '../../lib/solar/financing'
 import {
   azimuthLabel,
   formatKWh,
@@ -18,12 +19,31 @@ import {
   type DonutSlice,
 } from '../../components/charts/Charts'
 
-export function ResultsDashboard({ result }: { result: AssessmentResult }) {
+export function ResultsDashboard({
+  result,
+  financing,
+  financingMode = 'cash',
+}: {
+  result: AssessmentResult
+  financing?: FinancingResult
+  financingMode?: 'cash' | 'loan'
+}) {
   const { sizing, generation, energyFlow, finance, environment } = result
   const currency = finance.currency
   const monthlyConsumption = Array(12).fill(
     result.input.consumption.annualKWh / 12,
   )
+
+  // Electricity bill: before vs after solar (net of export revenue).
+  const billBeforeAnnual =
+    result.input.consumption.annualKWh * result.input.tariff.importPrice
+  const billAfterAnnual = Math.max(
+    -billBeforeAnnual,
+    energyFlow.gridImportKWh * result.input.tariff.importPrice -
+      energyFlow.exportedKWh * result.input.tariff.exportPrice,
+  )
+  const billReduction =
+    billBeforeAnnual > 0 ? 1 - billAfterAnnual / billBeforeAnnual : 0
 
   const genUse: DonutSlice[] = [
     { name: 'Self-consumed', value: energyFlow.selfConsumedKWh, color: 'green' },
@@ -72,6 +92,32 @@ export function ResultsDashboard({ result }: { result: AssessmentResult }) {
           <strong>{formatMoney(finance.npv, currency)}</strong>. Over {result.input.finance.analysisYears} years
           it avoids <strong>{formatTonnes(environment.lifetimeCO2Kg)}</strong> of CO₂.
         </p>
+      </Card>
+
+      {/* Bill before vs after */}
+      <Card>
+        <SectionHeading title="Your electricity bill" subtitle="Before vs after going solar" icon="🧾" />
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <Stat label="Bill before" value={`${formatMoney(billBeforeAnnual / 12, currency)}/mo`} sub={`${formatMoney(billBeforeAnnual, currency)}/yr`} />
+          <Stat label="Bill after" value={`${formatMoney(billAfterAnnual / 12, currency)}/mo`} sub={`${formatMoney(billAfterAnnual, currency)}/yr`} accent="green" />
+          <Stat label="You keep" value={formatPercent(billReduction)} sub="lower bills" accent="solar" />
+          <Stat label="Self-sufficiency" value={formatPercent(energyFlow.selfSufficiencyFraction)} sub="powered by you" accent="sky" />
+        </div>
+        <div className="mt-3 flex items-center gap-3">
+          <span className="w-20 text-xs text-ink-500">Before</span>
+          <div className="h-3 flex-1 overflow-hidden rounded-full bg-ink-100">
+            <div className="h-full rounded-full bg-rose-400" style={{ width: '100%' }} />
+          </div>
+        </div>
+        <div className="mt-1.5 flex items-center gap-3">
+          <span className="w-20 text-xs text-ink-500">After</span>
+          <div className="h-3 flex-1 overflow-hidden rounded-full bg-ink-100">
+            <div
+              className="h-full rounded-full bg-emerald-500"
+              style={{ width: `${Math.max(2, Math.min(100, (billAfterAnnual / Math.max(billBeforeAnnual, 1)) * 100))}%` }}
+            />
+          </div>
+        </div>
       </Card>
 
       {/* Energy generation */}
@@ -135,6 +181,50 @@ export function ResultsDashboard({ result }: { result: AssessmentResult }) {
         </p>
       </Card>
 
+      {/* Financing */}
+      {financing && (
+        <Card>
+          <SectionHeading title="How to pay for it" subtitle="Cash vs. a solar loan" icon="🏦" />
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className={`rounded-xl border p-4 ${financingMode === 'cash' ? 'border-solar-300 bg-solar-50' : 'border-ink-200'}`}>
+              <div className="flex items-center justify-between">
+                <h4 className="font-bold text-ink-900">💵 Pay cash</h4>
+                {financingMode === 'cash' && <Badge tone="solar">selected</Badge>}
+              </div>
+              <div className="mt-3 space-y-1.5 text-sm">
+                <Row label="Up-front" value={formatMoneyExact(finance.netCapex, currency)} />
+                <Row label="Payback" value={formatYears(finance.paybackYears)} />
+                <Row label="Lifetime gain" value={formatMoney(finance.lifetimeSavings, currency)} accent />
+              </div>
+            </div>
+            <div className={`rounded-xl border p-4 ${financingMode === 'loan' ? 'border-solar-300 bg-solar-50' : 'border-ink-200'}`}>
+              <div className="flex items-center justify-between">
+                <h4 className="font-bold text-ink-900">🏦 Solar loan</h4>
+                {financingMode === 'loan' && <Badge tone="solar">selected</Badge>}
+              </div>
+              <div className="mt-3 space-y-1.5 text-sm">
+                <Row label="Down-payment" value={formatMoneyExact(financing.loan.downPayment, currency)} />
+                <Row label="Monthly payment" value={`${formatMoney(financing.loan.monthlyPayment, currency)}/mo`} />
+                <Row label="Monthly solar saving" value={`${formatMoney(financing.loan.year1MonthlySaving, currency)}/mo`} accent />
+                <Row
+                  label="Net monthly (yr 1)"
+                  value={`${financing.loan.year1NetMonthly >= 0 ? '+' : ''}${formatMoney(financing.loan.year1NetMonthly, currency)}/mo`}
+                  accent={financing.loan.year1NetMonthly >= 0}
+                />
+                <Row label="Total interest" value={formatMoney(financing.loan.totalInterest, currency)} />
+              </div>
+            </div>
+          </div>
+          <p className="mt-3 rounded-xl bg-ink-50 p-3 text-xs text-ink-500">
+            {financing.loan.year1NetMonthly >= 0 ? (
+              <>✅ With this loan you're <strong>cashflow-positive from year one</strong> — the monthly bill savings exceed the loan repayment, so solar effectively pays for itself as you go.</>
+            ) : (
+              <>A loan spreads the cost but adds {formatMoney(financing.loan.totalInterest, currency)} of interest. Year-one repayments exceed savings by {formatMoney(-financing.loan.year1NetMonthly, currency)}/mo, narrowing as electricity prices rise. Adjust the loan terms under <em>Advanced</em>.</>
+            )}
+          </p>
+        </Card>
+      )}
+
       {/* Environmental */}
       <Card className="bg-gradient-to-br from-emerald-50 to-white">
         <SectionHeading title="Environmental impact" subtitle="Carbon avoided & equivalents" icon="🌍" />
@@ -187,6 +277,23 @@ export function ResultsDashboard({ result }: { result: AssessmentResult }) {
           </p>
         )}
       </Card>
+    </div>
+  )
+}
+
+function Row({
+  label,
+  value,
+  accent = false,
+}: {
+  label: string
+  value: string
+  accent?: boolean
+}) {
+  return (
+    <div className="flex items-center justify-between">
+      <span className="text-ink-500">{label}</span>
+      <span className={`font-semibold tnum ${accent ? 'text-emerald-600' : 'text-ink-800'}`}>{value}</span>
     </div>
   )
 }

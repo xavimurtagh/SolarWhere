@@ -1,14 +1,20 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { REGIONS, findRegion, regionsByCountry } from '../../lib/data/regions'
 import { buildIrradianceProfile } from '../../lib/solar/irradiance'
 import { findOptimalOrientation } from '../../lib/solar/geometry'
 import { costPerWatt, systemCapex } from '../../lib/solar/costs'
 import {
   KWP_PER_HECTARE,
+  abatementCost,
+  capacityForCO2Target,
   gridTargetPlan,
   hectaresToCapacity,
   homesPowered,
+  lcoeLifetime,
   optimizePortfolio,
+  parseSitesCSV,
+  serializeSitesCSV,
+  simplePayback,
   type PortfolioObjective,
   type PortfolioSite,
 } from '../../lib/solar/optimize'
@@ -18,6 +24,7 @@ import {
   formatNumber,
   formatPercent,
   formatTonnes,
+  formatYears,
 } from '../../lib/format'
 import {
   Badge,
@@ -72,6 +79,53 @@ function siteEconomics(site: SiteRow): PortfolioSite {
   }
 }
 
+/** Cost-efficiency metrics derived from a site's economics. */
+interface SiteEfficiency {
+  lcoe: number // ≈ $/kWh lifetime
+  abatement: number // $/tonne CO₂
+  payback: number // years
+}
+
+function siteEfficiency(e: PortfolioSite): SiteEfficiency {
+  return {
+    lcoe: lcoeLifetime(e.capex, e.annualGenerationKWh),
+    abatement: abatementCost(e.capex, e.annualCO2Kg),
+    payback: simplePayback(e.capex, e.annualSavings),
+  }
+}
+
+/** Format a small $/unit figure, guarding Infinity. */
+function formatPerUnit(value: number, digits = 2): string {
+  if (!isFinite(value)) return '—'
+  return `$${value.toFixed(digits)}`
+}
+
+type SortKey =
+  | 'name'
+  | 'capacity'
+  | 'cost'
+  | 'generation'
+  | 'lcoe'
+  | 'abatement'
+  | 'payback'
+type SortDir = 'asc' | 'desc'
+
+interface ColumnDef {
+  key: SortKey
+  label: string
+  align: 'left' | 'right'
+}
+
+const PORTFOLIO_COLUMNS: ColumnDef[] = [
+  { key: 'name', label: 'Site', align: 'left' },
+  { key: 'capacity', label: 'Capacity (kWp)', align: 'left' },
+  { key: 'cost', label: 'Est. cost', align: 'right' },
+  { key: 'generation', label: 'Gen/yr', align: 'right' },
+  { key: 'lcoe', label: '≈ $/kWh lifetime', align: 'right' },
+  { key: 'abatement', label: '$/t CO₂', align: 'right' },
+  { key: 'payback', label: 'Payback', align: 'right' },
+]
+
 export default function EnterprisePlanner() {
   const [tab, setTab] = useState<'portfolio' | 'grid'>('portfolio')
   return (
@@ -100,6 +154,10 @@ function PortfolioPlanner() {
   const [sites, setSites] = useState<SiteRow[]>(INITIAL_SITES)
   const [budget, setBudget] = useState(3_000_000)
   const [objective, setObjective] = useState<PortfolioObjective>('generation')
+  const [sortKey, setSortKey] = useState<SortKey>('name')
+  const [sortDir, setSortDir] = useState<SortDir>('asc')
+  const [importNote, setImportNote] = useState<{ tone: 'green' | 'rose'; text: string } | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const economics = useMemo(() => sites.map(siteEconomics), [sites])
   const result = useMemo(
@@ -119,6 +177,101 @@ function PortfolioPlanner() {
 
   const selectedById = new Map(result.selections.map((s) => [s.site.id, s]))
 
+  // Portfolio-level cost efficiency (funded build only).
+  const portfolioPayback = simplePayback(result.totalCapex, result.totalSavings)
+  const portfolioAbatement = abatementCost(result.totalCapex, result.totalCO2Kg)
+
+  // Join each editable row with its economics + efficiency, then sort for display.
+  const rows = sites.map((s, i) => {
+    const e = economics[i]
+    return { site: s, eco: e, eff: siteEfficiency(e) }
+  })
+  const sortedRows = [...rows].sort((a, b) => {
+    const dir = sortDir === 'asc' ? 1 : -1
+    let cmp: number
+    switch (sortKey) {
+      case 'name':
+        cmp = a.site.name.localeCompare(b.site.name)
+        break
+      case 'capacity':
+        cmp = a.site.capacityKWp - b.site.capacityKWp
+        break
+      case 'cost':
+        cmp = a.eco.capex - b.eco.capex
+        break
+      case 'generation':
+        cmp = a.eco.annualGenerationKWh - b.eco.annualGenerationKWh
+        break
+      case 'lcoe':
+        cmp = a.eff.lcoe - b.eff.lcoe
+        break
+      case 'abatement':
+        cmp = a.eff.abatement - b.eff.abatement
+        break
+      case 'payback':
+        cmp = a.eff.payback - b.eff.payback
+        break
+    }
+    return cmp * dir
+  })
+
+  const toggleSort = (key: SortKey) => {
+    if (key === sortKey) {
+      setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
+    } else {
+      setSortKey(key)
+      setSortDir('asc')
+    }
+  }
+
+  const exportCSV = () => {
+    const csv = serializeSitesCSV(
+      sites.map((s) => ({ name: s.name, regionId: s.regionId, capacityKWp: s.capacityKWp })),
+    )
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'solarwhere-sites.csv'
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }
+
+  const importCSV = (file: File) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      try {
+        const text = typeof reader.result === 'string' ? reader.result : ''
+        const parsed = parseSitesCSV(text)
+        if (parsed.length === 0) {
+          setImportNote({ tone: 'rose', text: 'No valid rows found in that file.' })
+          return
+        }
+        const imported: SiteRow[] = parsed.map((row) => {
+          const region = findRegion(row.regionId)
+          return {
+            id: nextId(),
+            name: row.name,
+            // findRegion falls back to a default for unknown ids — pin to first region instead.
+            regionId: region.id === row.regionId ? region.id : REGIONS[0].id,
+            capacityKWp: Math.max(1, row.capacityKWp),
+          }
+        })
+        setSites(imported)
+        setImportNote({ tone: 'green', text: `Imported ${imported.length} site${imported.length === 1 ? '' : 's'}.` })
+      } catch {
+        setImportNote({ tone: 'rose', text: 'Could not read that file.' })
+      }
+    }
+    reader.onerror = () => setImportNote({ tone: 'rose', text: 'Could not read that file.' })
+    reader.readAsText(file)
+  }
+
+  const sortIndicator = (key: SortKey) =>
+    key === sortKey ? (sortDir === 'asc' ? ' ▲' : ' ▼') : ''
+
   return (
     <div className="space-y-5">
       <Card>
@@ -126,48 +279,81 @@ function PortfolioPlanner() {
           title="Candidate sites"
           subtitle="Add the rooftops, car parks and land you could develop"
           icon="🏗️"
-          action={<button className="btn-primary px-3 py-1.5 text-xs" onClick={add}>+ Add site</button>}
+          action={
+            <div className="flex flex-wrap items-center gap-2">
+              <button className="btn-outline px-3 py-1.5 text-xs" onClick={exportCSV}>Export CSV</button>
+              <button className="btn-outline px-3 py-1.5 text-xs" onClick={() => fileInputRef.current?.click()}>Import CSV</button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".csv"
+                className="hidden"
+                onChange={(ev) => {
+                  const file = ev.target.files?.[0]
+                  if (file) importCSV(file)
+                  ev.target.value = ''
+                }}
+              />
+              <button className="btn-primary px-3 py-1.5 text-xs" onClick={add}>+ Add site</button>
+            </div>
+          }
         />
+        {importNote && (
+          <p className={`mb-2 text-xs ${importNote.tone === 'green' ? 'text-emerald-600' : 'text-rose-600'}`}>
+            {importNote.text}
+          </p>
+        )}
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[680px] text-sm">
+          <table className="w-full min-w-[860px] text-sm">
             <thead>
               <tr className="border-b border-ink-200 text-left text-xs uppercase tracking-wide text-ink-400">
-                <th className="py-2 pr-3">Site</th>
-                <th className="py-2 pr-3">Location</th>
-                <th className="py-2 pr-3">Capacity (kWp)</th>
-                <th className="py-2 pr-3">Est. cost</th>
-                <th className="py-2 pr-3">Gen/yr</th>
+                {PORTFOLIO_COLUMNS.map((col) => (
+                  <th
+                    key={col.key}
+                    className={`py-2 pr-3 ${col.align === 'right' ? 'text-right' : 'text-left'}`}
+                  >
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-0.5 uppercase tracking-wide hover:text-ink-600"
+                      onClick={() => toggleSort(col.key)}
+                    >
+                      {col.label}
+                      <span className="tnum">{sortIndicator(col.key)}</span>
+                    </button>
+                  </th>
+                ))}
+                <th className="py-2 pr-3 text-left">Location</th>
                 <th className="py-2"></th>
               </tr>
             </thead>
             <tbody>
-              {sites.map((s, i) => {
-                const e = economics[i]
-                return (
-                  <tr key={s.id} className="border-b border-ink-100">
-                    <td className="py-2 pr-3">
-                      <input className="input py-1.5" value={s.name} onChange={(ev) => update(s.id, { name: ev.target.value })} />
-                    </td>
-                    <td className="py-2 pr-3">
-                      <select className="select py-1.5" value={s.regionId} onChange={(ev) => update(s.id, { regionId: ev.target.value })}>
-                        {Object.entries(regionsByCountry()).map(([country, regions]) => (
-                          <optgroup key={country} label={country}>
-                            {regions.map((r) => (<option key={r.id} value={r.id}>{r.name}</option>))}
-                          </optgroup>
-                        ))}
-                      </select>
-                    </td>
-                    <td className="py-2 pr-3">
-                      <input type="number" className="input w-28 py-1.5" value={s.capacityKWp} min={1} onChange={(ev) => update(s.id, { capacityKWp: Math.max(1, parseFloat(ev.target.value) || 0) })} />
-                    </td>
-                    <td className="py-2 pr-3 tnum text-ink-600">{formatMoney(e.capex)}</td>
-                    <td className="py-2 pr-3 tnum text-ink-600">{formatKWh(e.annualGenerationKWh)}</td>
-                    <td className="py-2 text-right">
-                      <button className="text-ink-300 hover:text-rose-500" onClick={() => remove(s.id)} aria-label="Remove">✕</button>
-                    </td>
-                  </tr>
-                )
-              })}
+              {sortedRows.map(({ site: s, eco: e, eff }) => (
+                <tr key={s.id} className="border-b border-ink-100">
+                  <td className="py-2 pr-3">
+                    <input className="input py-1.5" value={s.name} onChange={(ev) => update(s.id, { name: ev.target.value })} />
+                  </td>
+                  <td className="py-2 pr-3">
+                    <input type="number" className="input w-28 py-1.5" value={s.capacityKWp} min={1} onChange={(ev) => update(s.id, { capacityKWp: Math.max(1, parseFloat(ev.target.value) || 0) })} />
+                  </td>
+                  <td className="py-2 pr-3 tnum text-right text-ink-600">{formatMoney(e.capex)}</td>
+                  <td className="py-2 pr-3 tnum text-right text-ink-600">{formatKWh(e.annualGenerationKWh)}</td>
+                  <td className="py-2 pr-3 tnum text-right text-ink-600">{formatPerUnit(eff.lcoe)}</td>
+                  <td className="py-2 pr-3 tnum text-right text-ink-600">{formatPerUnit(eff.abatement, 0)}</td>
+                  <td className="py-2 pr-3 tnum text-right text-ink-600">{formatYears(eff.payback)}</td>
+                  <td className="py-2 pr-3">
+                    <select className="select py-1.5" value={s.regionId} onChange={(ev) => update(s.id, { regionId: ev.target.value })}>
+                      {Object.entries(regionsByCountry()).map(([country, regions]) => (
+                        <optgroup key={country} label={country}>
+                          {regions.map((r) => (<option key={r.id} value={r.id}>{r.name}</option>))}
+                        </optgroup>
+                      ))}
+                    </select>
+                  </td>
+                  <td className="py-2 text-right">
+                    <button className="text-ink-300 hover:text-rose-500" onClick={() => remove(s.id)} aria-label="Remove">✕</button>
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>
@@ -210,6 +396,11 @@ function PortfolioPlanner() {
             <Stat label="CO₂ avoided/yr" value={formatTonnes(result.totalCO2Kg)} accent="green" />
             <Stat label="Homes powered" value={formatNumber(homesPowered(result.totalGenerationKWh))} />
           </div>
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
+            <Stat label="Savings/yr" value={formatMoney(result.totalSavings)} accent="solar" />
+            <Stat label="Blended payback" value={formatYears(portfolioPayback)} sub="capex ÷ annual savings" />
+            <Stat label="Avg abatement" value={formatPerUnit(portfolioAbatement, 0)} sub="$/t CO₂ lifetime" accent="green" />
+          </div>
           <Card>
             <SectionHeading title="Funding plan" subtitle={`${formatPercent(result.budgetUsedFraction)} of budget deployed`} icon="✅" />
             <div className="space-y-3">
@@ -247,6 +438,7 @@ function GridPlanner() {
   const region = findRegion(regionId)
   const [targetMW, setTargetMW] = useState(100)
   const [hectares, setHectares] = useState(200)
+  const [co2Target, setCo2Target] = useState(100_000)
 
   const profile = useMemo(() => buildIrradianceProfile(region.lat, region.annualGHI), [region])
   const optimal = useMemo(() => findOptimalOrientation(region.lat, profile.monthlyDailyGHI, 0.2), [region, profile])
@@ -259,6 +451,16 @@ function GridPlanner() {
   const landCapacityKWp = hectaresToCapacity(hectares)
   const landGenerationKWh = landCapacityKWp * specificYield
   const landCapex = landCapacityKWp * 1000 * costPerWatt(landCapacityKWp, region.costMultiplier)
+
+  // "By carbon-reduction target" derivation (inverse plan).
+  const co2CapacityKWp = capacityForCO2Target(co2Target, specificYield, region.gridCarbonKgPerKWh)
+  const co2Plan = gridTargetPlan(
+    co2CapacityKWp / 1000,
+    specificYield,
+    costPerWatt(co2CapacityKWp, region.costMultiplier),
+    region.gridCarbonKgPerKWh,
+  )
+  const cleanGrid = region.gridCarbonKgPerKWh <= 0
 
   return (
     <div className="space-y-5">
@@ -314,6 +516,43 @@ function GridPlanner() {
           </p>
         </Card>
       </div>
+
+      <Card>
+        <SectionHeading
+          title="By carbon-reduction target"
+          subtitle="Work backwards from a CO₂ goal to the build you need"
+          icon="🌱"
+        />
+        <Field label={`Target reduction — ${formatNumber(co2Target)} t CO₂/yr`}>
+          <div className="flex items-center gap-3">
+            <div className="flex-1">
+              <Slider value={co2Target} min={1000} max={2_000_000} step={1000} onChange={setCo2Target} format={(v) => `${formatNumber(v)} t/yr`} />
+            </div>
+            <input
+              type="number"
+              className="input w-36"
+              value={co2Target}
+              min={0}
+              step={1000}
+              onChange={(e) => setCo2Target(Math.max(0, parseFloat(e.target.value) || 0))}
+            />
+          </div>
+        </Field>
+        {cleanGrid ? (
+          <p className="mt-4 rounded-xl bg-ink-50 p-3 text-sm text-ink-500">
+            {region.name}'s grid carbon factor is effectively zero, so adding solar abates almost no grid CO₂ — there's no finite build that meets a carbon-reduction target here. Pick a higher-carbon grid to size one.
+          </p>
+        ) : (
+          <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-3">
+            <Stat label="Capacity needed" value={`${formatNumber(co2CapacityKWp / 1000, 1)} MW`} accent="solar" />
+            <Stat label="Annual generation" value={`${formatNumber(co2Plan.annualGenerationGWh)} GWh`} accent="sky" />
+            <Stat label="Land required" value={`${formatNumber(co2Plan.landHectares)} ha`} sub={`${formatNumber(co2Plan.landKm2, 1)} km²`} />
+            <Stat label="Capital cost" value={formatMoney(co2Plan.capex)} accent="solar" />
+            <Stat label="Homes powered" value={formatNumber(co2Plan.homesPowered)} accent="green" />
+            <Stat label="CO₂ avoided/yr" value={formatTonnes(co2Plan.annualCO2Tonnes * 1000)} accent="green" sub="checks against target" />
+          </div>
+        )}
+      </Card>
 
       <Card className="bg-gradient-to-br from-sky2-50 to-white">
         <SectionHeading title="What this means" icon="💡" />

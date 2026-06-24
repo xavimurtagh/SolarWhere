@@ -155,3 +155,152 @@ export function gridTargetPlan(
     annualCO2Tonnes: (annualGenerationKWh * gridCarbonKgPerKWh) / 1000,
   }
 }
+
+/** Assumed economic/accounting lifetime for lifetime-cost metrics, years. */
+export const PROJECT_LIFETIME_YEARS = 25
+
+/**
+ * Inverse of the grid plan: the nameplate capacity (kWp) required to abate a
+ * target amount of CO₂ each year, given a specific yield and grid carbon
+ * factor. Scales linearly with the target and inversely with the carbon
+ * factor. Returns 0 for a zero/negative carbon grid (no abatement possible,
+ * so no finite capacity would help).
+ */
+export function capacityForCO2Target(
+  targetTonnesPerYear: number,
+  specificYieldKWhPerKWp: number,
+  gridCarbonKgPerKWh: number,
+): number {
+  if (
+    targetTonnesPerYear <= 0 ||
+    specificYieldKWhPerKWp <= 0 ||
+    gridCarbonKgPerKWh <= 0
+  ) {
+    return 0
+  }
+  const annualGenerationKWh = (targetTonnesPerYear * 1000) / gridCarbonKgPerKWh
+  return annualGenerationKWh / specificYieldKWhPerKWp
+}
+
+/**
+ * Approximate lifetime levelised cost of energy, $/kWh: total capex spread over
+ * lifetime generation (ignores O&M, degradation and discounting — indicative
+ * only). Returns Infinity when there is no generation.
+ */
+export function lcoeLifetime(
+  capex: number,
+  annualGenerationKWh: number,
+  lifetimeYears: number = PROJECT_LIFETIME_YEARS,
+): number {
+  const lifetimeGeneration = annualGenerationKWh * lifetimeYears
+  if (lifetimeGeneration <= 0) return Infinity
+  return capex / lifetimeGeneration
+}
+
+/**
+ * Carbon abatement cost, $/tonne CO₂: capex spread over lifetime CO₂ avoided.
+ * Returns Infinity when no carbon is abated.
+ */
+export function abatementCost(
+  capex: number,
+  annualCO2Kg: number,
+  lifetimeYears: number = PROJECT_LIFETIME_YEARS,
+): number {
+  const lifetimeTonnes = (annualCO2Kg / 1000) * lifetimeYears
+  if (lifetimeTonnes <= 0) return Infinity
+  return capex / lifetimeTonnes
+}
+
+/** Simple (undiscounted) payback in years. Infinity when there are no savings. */
+export function simplePayback(capex: number, annualSavings: number): number {
+  if (annualSavings <= 0) return Infinity
+  return capex / annualSavings
+}
+
+/** A site as represented in the importable/exportable CSV. */
+export interface SiteCSVRow {
+  name: string
+  regionId: string
+  capacityKWp: number
+}
+
+/** Escape a single CSV field, quoting when it contains a comma, quote or newline. */
+function escapeCSVField(value: string): string {
+  if (/[",\n\r]/.test(value)) {
+    return `"${value.replace(/"/g, '""')}"`
+  }
+  return value
+}
+
+/** Split one CSV line into fields, honouring double-quoted fields. */
+function splitCSVLine(line: string): string[] {
+  const fields: string[] = []
+  let current = ''
+  let inQuotes = false
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i]
+    if (inQuotes) {
+      if (ch === '"') {
+        if (line[i + 1] === '"') {
+          current += '"'
+          i++
+        } else {
+          inQuotes = false
+        }
+      } else {
+        current += ch
+      }
+    } else if (ch === '"') {
+      inQuotes = true
+    } else if (ch === ',') {
+      fields.push(current)
+      current = ''
+    } else {
+      current += ch
+    }
+  }
+  fields.push(current)
+  return fields
+}
+
+/** Serialize sites to CSV text with a header row (name, regionId, capacityKWp). */
+export function serializeSitesCSV(sites: SiteCSVRow[]): string {
+  const lines = ['name,regionId,capacityKWp']
+  for (const s of sites) {
+    lines.push(
+      [escapeCSVField(s.name), escapeCSVField(s.regionId), String(s.capacityKWp)].join(','),
+    )
+  }
+  return lines.join('\n')
+}
+
+/**
+ * Parse CSV text into site rows. Tolerates an optional header row, blank lines
+ * and quoted fields. Capacity is coerced to a number and clamped to ≥ 1; rows
+ * without a name or region id are skipped. Region ids are NOT validated here
+ * (the caller maps unknown ids onto a fallback) so the helper stays pure.
+ */
+export function parseSitesCSV(text: string): SiteCSVRow[] {
+  const rows: SiteCSVRow[] = []
+  const lines = text.split(/\r\n|\r|\n/)
+  for (const raw of lines) {
+    if (raw.trim() === '') continue
+    const fields = splitCSVLine(raw).map((f) => f.trim())
+    const [name = '', regionId = '', capacityRaw = ''] = fields
+    // Skip a header row.
+    if (
+      name.toLowerCase() === 'name' &&
+      regionId.toLowerCase() === 'regionid'
+    ) {
+      continue
+    }
+    if (name === '' && regionId === '') continue
+    const capacity = parseFloat(capacityRaw)
+    rows.push({
+      name: name || 'Imported site',
+      regionId,
+      capacityKWp: Math.max(1, Number.isFinite(capacity) ? capacity : 1),
+    })
+  }
+  return rows
+}
