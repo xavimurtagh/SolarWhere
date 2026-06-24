@@ -1,0 +1,11 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./tsconfig.app.json" },
+    { "path": "./tsconfig.node.json" }
+  ],
+  "comment": "compilerOptions below are only consumed by standalone esbuild/tsx (the test runner); `tsc -b` ignores them and uses the referenced projects.",
+  "compilerOptions": {
+    "jsx": "react-jsx"
+  }
+}

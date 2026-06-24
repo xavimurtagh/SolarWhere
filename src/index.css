@@ -1,0 +1,88 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  @apply bg-ink-50 text-ink-800 antialiased;
+  margin: 0;
+  min-height: 100vh;
+}
+
+/* Numeric tabular alignment for figures */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+@layer components {
+  .card {
+    @apply rounded-2xl bg-white shadow-card border border-ink-100;
+  }
+  .card-pad {
+    @apply p-5 sm:p-6;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .btn-primary {
+    @apply btn bg-solar-500 text-white hover:bg-solar-600;
+  }
+  .btn-ghost {
+    @apply btn bg-ink-100 text-ink-700 hover:bg-ink-200;
+  }
+  .btn-outline {
+    @apply btn border border-ink-200 bg-white text-ink-700 hover:bg-ink-50;
+  }
+  .label {
+    @apply block text-sm font-medium text-ink-600 mb-1.5;
+  }
+  .input {
+    @apply w-full rounded-xl border border-ink-200 bg-white px-3.5 py-2.5 text-sm text-ink-800 shadow-sm outline-none transition focus:border-solar-400 focus:ring-2 focus:ring-solar-200;
+  }
+  .select {
+    @apply input appearance-none bg-white;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium;
+  }
+  .stat-value {
+    @apply text-2xl font-bold text-ink-900 tnum sm:text-3xl;
+  }
+  .stat-label {
+    @apply text-xs font-medium uppercase tracking-wide text-ink-400;
+  }
+  .section-title {
+    @apply text-lg font-bold text-ink-900;
+  }
+  .pill-tab {
+    @apply rounded-lg px-3 py-1.5 text-sm font-medium transition-colors;
+  }
+}
+
+/* Leaflet container needs an explicit height to render */
+.leaflet-container {
+  height: 100%;
+  width: 100%;
+  border-radius: 1rem;
+  z-index: 0;
+  font: inherit;
+}
+
+/* Range slider styling */
+input[type='range'] {
+  @apply h-2 w-full cursor-pointer appearance-none rounded-full bg-ink-200;
+}
+input[type='range']::-webkit-slider-thumb {
+  @apply h-5 w-5 appearance-none rounded-full bg-solar-500 shadow;
+  -webkit-appearance: none;
+}
+input[type='range']::-moz-range-thumb {
+  @apply h-5 w-5 rounded-full border-0 bg-solar-500 shadow;
+}

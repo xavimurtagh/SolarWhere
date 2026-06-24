@@ -1,0 +1,13 @@
+{
+  "comment": "Used only by the standalone tsx test runner so it transpiles JSX with the automatic React runtime (matching Vite). Not part of the tsc build graph.",
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "esModuleInterop": true,
+    "allowImportingTsExtensions": true,
+    "skipLibCheck": true,
+    "strict": true
+  }
+}
